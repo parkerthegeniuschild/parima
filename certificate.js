@@ -2,7 +2,7 @@
  * CloudFormation Custom Resource for generating SSL Certificate in the us-east-1 region
  */
 const AWS = require('aws-sdk');
-var acm = new AWS.ACM({region:'us-east-1'});
+var acm = new AWS.ACM();
 var route53 = new AWS.Route53();
 var cloudformation = new AWS.CloudFormation();
 
@@ -13,6 +13,12 @@ const sleep = (milliseconds) => {
 module.exports.handler = async(event, context) => {
     console.log(JSON.stringify(event));
     if (event.RequestType != null) {
+
+        let region = event.ResourceProperties.Region;
+        if (region != null) {
+            acm = new AWS.ACM({region:region});
+            console.log("using region: " + region);
+        }
 
         if (event.RequestType === 'Create') {
             let domainName = event.ResourceProperties.DomainName;
@@ -29,6 +35,7 @@ module.exports.handler = async(event, context) => {
                 console.log("waiting DNS to be updated so certificate can be validated");
                 return waitForValidation(certificate.CertificateArn);
             }).then((certificate)=>{
+                console.log("certificate " + certificate.Certificate + " has been validated");
                 return sendResponse(event, context, 'SUCCESS', { 'CertificateArn': certificate.Certificate.CertificateArn})
             }).catch(error => { 
                 console.log("error " + error);
@@ -38,11 +45,14 @@ module.exports.handler = async(event, context) => {
         } else if (event.RequestType === 'Delete') {
             
             let stackName = event.ResourceProperties.StackName;
-            return findCertificateArn(stackName).then((certificateArn)=>{
+            let outputParameter = event.ResourceProperties.OutputParameter;
+
+            return findCertificateArn(stackName,outputParameter).then((certificateArn)=>{
                 return deleteCertificate(certificateArn);
             }).then((certificate)=>{
                 return sendResponse(event, context, 'SUCCESS', { })
             }).catch(error => { 
+                console.log(error);
                 return sendResponse(event, context, 'SUCCESS');
             });
             
@@ -112,7 +122,7 @@ async function updateRoute53(hostedZone, certificate) {
 async function waitForValidation(certificateArn) {
     return acm.waitFor('certificateValidated', {CertificateArn: certificateArn}).promise();
 }
-async function findCertificateArn(stackName) {
+async function findCertificateArn(stackName, outputParameter) {
     var params = {
       StackName: stackName
     };
@@ -122,11 +132,16 @@ async function findCertificateArn(stackName) {
           else {
               var value = "";
               for (let output of data.Stacks[0].Outputs) {
-                  if (output.OutputKey == "Certificate") {
+                  if (output.OutputKey == outputParameter) {
                       value = output.OutputValue;
                   }
               }
-              resolve(value);
+
+              if (value != "") {
+                resolve(value);
+              } else {
+                reject(value);
+              }
           }
         });
     });
